@@ -1,0 +1,18 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function role() { return request.auth.token.get('role', 'NONE'); }
+    function okFile() {
+      return request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('(application/pdf|image/(jpeg|png|webp))');
+    }
+    // documents/{entityType}/{entityId}/{file}
+    match /documents/{entityType}/{entityId}/{file} {
+      allow read: if signedIn() && role() != 'NONE' && role() != 'DRIVER';
+      allow write: if signedIn() && role() in ['SUPER_ADMIN','OWNER','FLEET_MANAGER','OPERATIONS_MANAGER','DISPATCHER'] && okFile();
+      allow delete: if signedIn() && role() in ['SUPER_ADMIN','OWNER'];
+    }
+    match /{allPaths=**} { allow read, write: if false; }
+  }
+}

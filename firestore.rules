@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function role() { return request.auth.token.get('role', 'NONE'); }
+    function hasRole(list) { return signedIn() && role() in list; }
+
+    function ADMINS()   { return ['SUPER_ADMIN', 'OWNER']; }
+    function FLEET_W()  { return ['SUPER_ADMIN', 'OWNER', 'FLEET_MANAGER']; }
+    function STAFF_R()  { return ['SUPER_ADMIN', 'OWNER', 'FLEET_MANAGER', 'OPERATIONS_MANAGER',
+                                  'DISPATCHER', 'FINANCE_MANAGER', 'MAINTENANCE_MANAGER', 'VIEWER']; }
+
+    function isStr(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    function stamped() { return request.resource.data.updatedBy == request.auth.uid; }
+
+    // ---------- users (written by Cloud Functions only) ----------
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || hasRole(ADMINS()));
+      allow write: if false;
+    }
+    match /loginHistory/{id} {
+      allow read: if hasRole(ADMINS());
+      allow write: if false;
+    }
+
+    // ---------- audit log: immutable, server-written ----------
+    match /auditLogs/{id} {
+      allow read: if hasRole(ADMINS());
+      allow write: if false;
+    }
+
+    // ---------- vehicles ----------
+    function validVehicle(d) {
+      return isStr(d.fleetId, 2, 20) && isStr(d.registration, 3, 15) && isStr(d.make, 1, 40)
+        && isStr(d.model, 1, 40) && d.year is int && d.year >= 1980 && d.year <= 2100
+        && d.mileageKm is number && d.mileageKm >= 0
+        && d.status in ['Available','Assigned','Loading','In Transit','At Border','Delivered',
+                        'Parked','Maintenance','Breakdown','Accident','Inactive']
+        && d.searchKey is string;
+    }
+    match /vehicles/{id} {
+      allow read: if hasRole(STAFF_R());
+      allow create: if hasRole(FLEET_W()) && validVehicle(request.resource.data)
+                       && request.resource.data.fleetId == id && stamped();
+      allow update: if hasRole(FLEET_W()) && validVehicle(request.resource.data)
+                       && request.resource.data.fleetId == resource.data.fleetId && stamped();
+      allow delete: if hasRole(ADMINS());
+    }
+
+    // ---------- drivers ----------
+    function validDriver(d) {
+      return isStr(d.employeeId, 2, 20) && isStr(d.fullName, 2, 80) && isStr(d.phone, 7, 20)
+        && isStr(d.licenceNo, 3, 30) && d.licenceExpiry is string
+        && d.employmentStatus in ['Active','On Leave','Suspended','Terminated']
+        && d.searchKey is string;
+    }
+    match /drivers/{id} {
+      allow read: if hasRole(['SUPER_ADMIN','OWNER','FLEET_MANAGER','OPERATIONS_MANAGER','DISPATCHER','VIEWER']);
+      allow create: if hasRole(FLEET_W()) && validDriver(request.resource.data)
+                       && request.resource.data.employeeId == id && stamped();
+      allow update: if hasRole(FLEET_W()) && validDriver(request.resource.data)
+                       && request.resource.data.employeeId == resource.data.employeeId && stamped();
+      allow delete: if hasRole(ADMINS());
+    }
+
+    // everything not listed is denied
+    match /{document=**} { allow read, write: if false; }
+  }
+}
